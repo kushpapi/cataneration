@@ -1,0 +1,9 @@
+.env
+.DS_Store
+.streamlit/secrets.toml
+assets/owners.local.csv
+data/raw/
+data/staging/
+owner_mapping_mfl-2.xlsx
+.claude/
+CLAUDE.md
