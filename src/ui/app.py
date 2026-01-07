@@ -641,23 +641,27 @@ if page == "All-Time Leaderboard":
             'points_for', 'points_against', 'avg_points_for', 'avg_points_against'
         ]].copy()
 
+        styled_df['win_pct'] = styled_df['win_pct'] * 100
+
         styled_df.columns = [
             'Rank', 'Owner', 'GP', 'Record', 'Win %',
             'PF', 'PA', 'PPG', 'PAPG'
         ]
 
-        # Format numbers
-        styled_df['Win %'] = styled_df['Win %'].apply(lambda x: f"{x*100:.1f}%")
-        styled_df['PF'] = styled_df['PF'].apply(lambda x: f"{x:,.1f}")
-        styled_df['PA'] = styled_df['PA'].apply(lambda x: f"{x:,.1f}")
-        styled_df['PPG'] = styled_df['PPG'].apply(lambda x: f"{x:.2f}")
-        styled_df['PAPG'] = styled_df['PAPG'].apply(lambda x: f"{x:.2f}")
-
         st.dataframe(
             styled_df,
             hide_index=True,
             use_container_width=True,
-            height=min(800, len(styled_df) * 40 + 100)
+            height=min(800, len(styled_df) * 40 + 100),
+            column_config={
+                "Rank": st.column_config.NumberColumn(format="%d"),
+                "GP": st.column_config.NumberColumn(format="%d"),
+                "Win %": st.column_config.NumberColumn(format="%.1f%%"),
+                "PF": st.column_config.NumberColumn(format="%.1f"),
+                "PA": st.column_config.NumberColumn(format="%.1f"),
+                "PPG": st.column_config.NumberColumn(format="%.2f"),
+                "PAPG": st.column_config.NumberColumn(format="%.2f"),
+            }
         )
 
         # Podium display (The Athletic style: visual storytelling)
@@ -810,17 +814,17 @@ elif page == "Owner Profile":
                 display_seasons['record'] = display_seasons.apply(
                     lambda x: format_record(x['wins'], x['losses'], x['ties']), axis=1
                 )
-                display_seasons['win_pct_display'] = display_seasons['win_pct'].apply(format_pct)
+                display_seasons['win_pct_pct'] = display_seasons['win_pct'] * 100
 
                 # Calculate vs league average for each season
                 league_avg_by_season = season_df.groupby('season')['win_pct'].mean()
-                display_seasons['vs_avg'] = display_seasons.apply(
-                    lambda x: f"{(x['win_pct'] - league_avg_by_season.get(x['season'], 0.5))*100:+.1f}%",
+                display_seasons['vs_avg_pct'] = display_seasons.apply(
+                    lambda x: (x['win_pct'] - league_avg_by_season.get(x['season'], 0.5)) * 100,
                     axis=1
                 )
 
                 styled_seasons = display_seasons[[
-                    'season', 'record', 'win_pct_display', 'vs_avg',
+                    'season', 'record', 'win_pct_pct', 'vs_avg_pct',
                     'points_for', 'points_against'
                 ]].copy()
 
@@ -828,14 +832,18 @@ elif page == "Owner Profile":
                     'Season', 'Record', 'Win %', 'vs League Avg', 'PF', 'PA'
                 ]
 
-                styled_seasons['PF'] = styled_seasons['PF'].apply(lambda x: f"{x:.1f}")
-                styled_seasons['PA'] = styled_seasons['PA'].apply(lambda x: f"{x:.1f}")
-
                 st.dataframe(
                     styled_seasons,
                     hide_index=True,
                     use_container_width=True,
-                    height=min(600, len(styled_seasons) * 40 + 100)
+                    height=min(600, len(styled_seasons) * 40 + 100),
+                    column_config={
+                        "Season": st.column_config.NumberColumn(format="%d"),
+                        "Win %": st.column_config.NumberColumn(format="%.1f%%"),
+                        "vs League Avg": st.column_config.NumberColumn(format="%+.1f%%"),
+                        "PF": st.column_config.NumberColumn(format="%.1f"),
+                        "PA": st.column_config.NumberColumn(format="%.1f"),
+                    }
                 )
 
                 # Summary stats
