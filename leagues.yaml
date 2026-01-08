@@ -1,0 +1,54 @@
+# WCHB Fantasy League - Platform Configuration
+# This is the source of truth for league IDs across all platforms
+
+league_name: "WCHB Fantasy Football"
+
+platforms:
+  mfl:
+    base_url: "https://www.mfl.com"
+    seasons:
+      2013:
+        league_id: "63294"
+      2014:
+        league_id: "34454"
+      2015:
+        league_id: "43804"
+      2016:
+        league_id: "19829"
+      2017:
+        league_id: "19829"
+      2018:
+        league_id: "19829"
+      2019:
+        league_id: "19829"
+
+  fleaflicker:
+    base_url: "https://www.fleaflicker.com/api"
+    league_id: "311194"
+    seasons:
+      2020:
+        has_matchups: true
+      2021:
+        has_matchups: true
+      2022:
+        has_matchups: true
+      2023:
+        has_matchups: true
+      2024:
+        has_matchups: true
+      2025:
+        has_matchups: false  # Draft-only season, matchups on Sleeper
+
+  sleeper:
+    base_url: "https://api.sleeper.app/v1"
+    league_id: "1269081387739136000"
+    username: "benmmccoy"
+    seasons:
+      2025:
+        has_matchups: true
+
+# Standard fantasy football week counts (adjust if league uses different settings)
+defaults:
+  regular_season_weeks: 14
+  playoff_weeks: 3
+  total_weeks: 17

@@ -1,0 +1,7 @@
+pyproject.toml
+fantasy_history.egg-info/PKG-INFO
+fantasy_history.egg-info/SOURCES.txt
+fantasy_history.egg-info/dependency_links.txt
+fantasy_history.egg-info/requires.txt
+fantasy_history.egg-info/top_level.txt
+src/__init__.py

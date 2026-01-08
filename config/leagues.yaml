@@ -1,0 +1,62 @@
+# WCHB Fantasy Football League Configuration
+# Maps platforms, seasons, and league IDs
+
+mfl:
+  seasons:
+    2013:
+      league_id: "63294"
+      host: null  # Will discover via API
+      weeks: 17
+    2014:
+      league_id: "34454"
+      host: null  # Will discover via API
+      weeks: 17
+    2015:
+      league_id: "43804"
+      host: null  # Will discover via API
+      weeks: 17
+    2016:
+      league_id: "19829"
+      host: "www44"
+      weeks: 17
+    2017:
+      league_id: "19829"
+      host: "www44"
+      weeks: 17
+    2018:
+      league_id: "19829"
+      host: "www44"
+      weeks: 17
+    2019:
+      league_id: "19829"
+      host: "www44"
+      weeks: 17
+
+fleaflicker:
+  league_id: "311194"
+  seasons:
+    2020:
+      weeks: 17
+      has_matchups: true
+    2021:
+      weeks: 18
+      has_matchups: true
+    2022:
+      weeks: 18
+      has_matchups: true
+    2023:
+      weeks: 18
+      has_matchups: true
+    2024:
+      weeks: 18
+      has_matchups: true
+    2025:
+      weeks: 0
+      has_matchups: false  # Draft only, no games played
+
+sleeper:
+  username: "benmmccoy"
+  seasons:
+    2025:
+      league_id: "1269081387739136000"
+      weeks: 18
