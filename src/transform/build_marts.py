@@ -5,7 +5,11 @@ from typing import Optional
 import json
 import pandas as pd
 from src.common.ids import generate_game_id, generate_team_id
-from src.common.sleeper_playoffs import derive_champion_roster_id
+from src.common.sleeper_playoffs import (
+    derive_champion_roster_id,
+    derive_bracket_seed_map,
+    get_champion_from_league_metadata,
+)
 
 
 def load_owner_mappings() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -469,6 +473,41 @@ def _sleeper_bracket_winner(bracket: list) -> Optional[str]:
     return None
 
 
+def _extract_sleeper_roster_id(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value) if value.isdigit() else None
+    if isinstance(value, dict):
+        for key in ("id", "roster_id"):
+            if key in value:
+                return _extract_sleeper_roster_id(value.get(key))
+    return None
+
+
+def _sleeper_winners_top3(bracket: list) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    champion = None
+    runner_up = None
+    third_place = None
+    for matchup in bracket:
+        if not isinstance(matchup, dict):
+            continue
+        placement = matchup.get("p")
+        if placement == 1:
+            winner_id = _extract_sleeper_roster_id(matchup.get("w"))
+            t1 = _extract_sleeper_roster_id(matchup.get("t1"))
+            t2 = _extract_sleeper_roster_id(matchup.get("t2"))
+            if winner_id is not None:
+                champion = winner_id
+                if t1 is not None and t2 is not None:
+                    runner_up = t2 if winner_id == t1 else t1
+        elif placement == 3:
+            third_place = _extract_sleeper_roster_id(matchup.get("w"))
+    return champion, runner_up, third_place
+
+
 def _winner_from_scores(home_score: float, away_score: float, home_id: str, away_id: str) -> Optional[str]:
     if home_score > away_score:
         return home_id
@@ -657,13 +696,25 @@ def build_mart_titles(mart_matchups: pd.DataFrame) -> pd.DataFrame:
                 season = int(season_dir.name)
             except ValueError:
                 continue
-            for winners_file in season_dir.glob("*_winners_bracket.json"):
-                league_id = winners_file.name.split("_winners_bracket.json")[0]
-                winners_bracket = json.loads(winners_file.read_text())
+
+            # Find league.json to get champion from metadata (preferred)
+            for league_file in season_dir.glob("*_league.json"):
+                league_id = league_file.name.split("_league.json")[0]
+                league_data = json.loads(league_file.read_text())
+
+                # Get champion from league metadata (simple, reliable)
+                champ_team_id = get_champion_from_league_metadata(league_data)
+
+                # Fallback to bracket parsing if metadata missing
+                if champ_team_id is None:
+                    winners_file = season_dir / f"{league_id}_winners_bracket.json"
+                    if winners_file.exists():
+                        winners_bracket = json.loads(winners_file.read_text())
+                        champ_team_id = derive_champion_roster_id(winners_bracket)
+
+                # Losers bracket champion (no metadata, must parse bracket)
                 losers_file = season_dir / f"{league_id}_losers_bracket.json"
                 losers_bracket = json.loads(losers_file.read_text()) if losers_file.exists() else []
-
-                champ_team_id = derive_champion_roster_id(winners_bracket)
                 losers_team_id = derive_champion_roster_id(losers_bracket)
 
                 champ_meta = _lookup_team_meta(team_meta, "sleeper", season, league_id, champ_team_id)
@@ -854,6 +905,188 @@ def build_mart_titles(mart_matchups: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(titles)
 
 
+def build_mart_playoff_seeds() -> pd.DataFrame:
+    """
+    Build mart_playoff_seeds table from bracket-based sources.
+
+    Returns:
+        mart_playoff_seeds DataFrame
+    """
+    owner_aliases, team_aliases = load_owner_mappings()
+    team_meta = _build_team_meta(owner_aliases, team_aliases)
+    seed_rows = []
+
+    # Sleeper seeds (derive from rosters standings)
+    sleeper_raw_dir = Path("data/raw/sleeper")
+    if sleeper_raw_dir.exists():
+        for season_dir in sleeper_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+
+            # Get league settings for playoff_teams count
+            for league_file in season_dir.glob("*_league.json"):
+                league_id = league_file.name.split("_league.json")[0]
+                league_data = json.loads(league_file.read_text())
+                playoff_teams = league_data.get("settings", {}).get("playoff_teams", 6)
+
+                # Load rosters to derive seeding from standings
+                rosters_file = season_dir / f"{league_id}_rosters.json"
+                if not rosters_file.exists():
+                    continue
+                rosters = json.loads(rosters_file.read_text())
+
+                # Sort by wins (desc), then points (desc) to get playoff seeding
+                sorted_rosters = sorted(
+                    rosters,
+                    key=lambda r: (
+                        -r.get("settings", {}).get("wins", 0),
+                        -r.get("settings", {}).get("fpts", 0)
+                    )
+                )
+
+                # Take top N teams (playoff_teams)
+                for seed, roster in enumerate(sorted_rosters[:playoff_teams], start=1):
+                    roster_id = roster.get("roster_id")
+                    meta = _lookup_team_meta(team_meta, "sleeper", season, league_id, roster_id)
+                    seed_rows.append({
+                        "season": season,
+                        "platform": "sleeper",
+                        "platform_league_id": league_id,
+                        "bracket_type": "winners",
+                        "round": 1,
+                        "matchup_id": str((seed + 1) // 2),  # Matchup 1: seeds 1&2, Matchup 2: seeds 3&4, etc.
+                        "slot": "T1" if seed % 2 == 1 else "T2",
+                        "platform_team_id": str(roster_id) if roster_id is not None else None,
+                        "owner_id": meta["owner_id"] if meta else None,
+                        "team_name": meta["team_name"] if meta else None,
+                        "seed": seed
+                    })
+
+    # MFL seeds (from playoff bracket data)
+    # Only process bracket_id=1 (winners bracket) for playoff seeding
+    mfl_raw_dir = Path("data/raw/mfl")
+    if mfl_raw_dir.exists():
+        for season_dir in mfl_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+
+            # Only process winners bracket (bracket_id=1) for seeding
+            for bracket_file in season_dir.glob("*_playoffBracket_1.json"):
+                league_id = bracket_file.name.split("_playoffBracket")[0]
+
+                data = json.loads(bracket_file.read_text())
+                playoff_rounds = data.get("playoffBracket", {}).get("playoffRound", [])
+                if isinstance(playoff_rounds, dict):
+                    playoff_rounds = [playoff_rounds]
+
+                weeks = []
+                for round_data in playoff_rounds:
+                    try:
+                        weeks.append(int(round_data.get("week")))
+                    except (TypeError, ValueError):
+                        continue
+                if not weeks:
+                    continue
+                first_week = min(weeks)
+                round_data = next((r for r in playoff_rounds if str(r.get("week")) == str(first_week)), None)
+                if not round_data:
+                    continue
+                playoff_games = round_data.get("playoffGame", [])
+                if isinstance(playoff_games, dict):
+                    playoff_games = [playoff_games]
+
+                for idx, game in enumerate(playoff_games, start=1):
+                    matchup_id = str(game.get("game_id") or idx)
+                    home = game.get("home", {})
+                    away = game.get("away", {})
+                    for slot, team in (("T1", home), ("T2", away)):
+                        team_id = team.get("franchise_id")
+                        meta = _lookup_team_meta(team_meta, "mfl", season, league_id, team_id)
+                        seed_rows.append({
+                            "season": season,
+                            "platform": "mfl",
+                            "platform_league_id": league_id,
+                            "bracket_type": "winners",
+                            "round": 1,
+                            "matchup_id": matchup_id,
+                            "slot": slot,
+                            "platform_team_id": team_id,
+                            "owner_id": meta["owner_id"] if meta else None,
+                            "team_name": meta["team_name"] if meta else None,
+                            "seed": team.get("seed")
+                        })
+
+    # Fleaflicker seeds (derive from standings file - wins then PF tiebreaker)
+    fleaflicker_raw_dir = Path("data/raw/fleaflicker")
+    if fleaflicker_raw_dir.exists():
+        for season_dir in fleaflicker_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+
+            # Find standings file
+            standings_files = list(season_dir.glob("*_standings.json"))
+            if not standings_files:
+                continue
+            standings_file = standings_files[0]
+            league_id = standings_file.name.split("_standings.json")[0]
+
+            # Load standings and extract team records
+            standings_data = json.loads(standings_file.read_text())
+            all_teams = []
+            for division in standings_data.get("divisions", []):
+                for team in division.get("teams", []):
+                    team_id = str(team.get("id"))
+                    record = team.get("recordOverall", {})
+                    wins = record.get("wins", 0)
+                    pf = team.get("pointsFor", {}).get("value", 0)
+                    all_teams.append({
+                        "team_id": team_id,
+                        "team_name": team.get("name"),
+                        "wins": wins,
+                        "points_for": pf
+                    })
+
+            # Sort by wins (desc), then points for (desc) - standard tiebreaker
+            all_teams.sort(key=lambda t: (-t["wins"], -t["points_for"]))
+
+            # Create seed mapping (1-indexed)
+            seed_map = {t["team_id"]: idx + 1 for idx, t in enumerate(all_teams)}
+
+            # Only add top 6 (playoff teams) to seed_rows
+            playoff_teams = 6
+            for idx, team_data in enumerate(all_teams[:playoff_teams]):
+                seed = idx + 1
+                team_id = team_data["team_id"]
+                meta = _lookup_team_meta(team_meta, "fleaflicker", season, league_id, team_id)
+                seed_rows.append({
+                    "season": season,
+                    "platform": "fleaflicker",
+                    "platform_league_id": league_id,
+                    "bracket_type": "winners",
+                    "round": 1,
+                    "matchup_id": str((seed + 1) // 2),  # Group seeds into matchups: 1&2->1, 3&4->2, 5&6->3
+                    "slot": "T1" if seed % 2 == 1 else "T2",
+                    "platform_team_id": team_id,
+                    "owner_id": meta["owner_id"] if meta else None,
+                    "team_name": meta["team_name"] if meta else None,
+                    "seed": seed
+                })
+
+    return pd.DataFrame(seed_rows)
+
+
 def build_mart_owner_achievements(mart_matchups: pd.DataFrame) -> pd.DataFrame:
     """
     Build mart_owner_achievements table with top-3 playoff finishes and points-for seasons.
@@ -886,6 +1119,207 @@ def build_mart_owner_achievements(mart_matchups: pd.DataFrame) -> pd.DataFrame:
 
     playoff_top3_by_owner: dict[str, list[int]] = {}
     pf_top3_by_owner: dict[str, list[int]] = {}
+    winners_top3_by_owner: dict[str, set[int]] = {}
+    top2_seeds_by_owner: dict[str, set[int]] = {}
+
+    owner_aliases, team_aliases = load_owner_mappings()
+    team_meta = _build_team_meta(owner_aliases, team_aliases)
+
+    # Build playoff seeds to get top 2 seeds per season
+    playoff_seeds = build_mart_playoff_seeds()
+    if not playoff_seeds.empty:
+        # Filter to seeds 1 and 2 only
+        top2_seeds = playoff_seeds[playoff_seeds["seed"].isin([1, 2])]
+        for _, row in top2_seeds.iterrows():
+            owner_id = row.get("owner_id")
+            season = row.get("season")
+            if owner_id and season:
+                top2_seeds_by_owner.setdefault(owner_id, set()).add(int(season))
+
+    # Bracket-based winners top-3 (champion, runner-up, 3rd place)
+    sleeper_raw_dir = Path("data/raw/sleeper")
+    if sleeper_raw_dir.exists():
+        for season_dir in sleeper_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+            for winners_file in season_dir.glob("*_winners_bracket.json"):
+                league_id = winners_file.name.split("_winners_bracket.json")[0]
+                winners_bracket = json.loads(winners_file.read_text())
+                champ_id, runner_up_id, third_id = _sleeper_winners_top3(winners_bracket)
+                for roster_id in (champ_id, runner_up_id, third_id):
+                    meta = _lookup_team_meta(team_meta, "sleeper", season, league_id, roster_id)
+                    if meta:
+                        winners_top3_by_owner.setdefault(meta["owner_id"], set()).add(season)
+
+    mfl_raw_dir = Path("data/raw/mfl")
+    if mfl_raw_dir.exists():
+        for season_dir in mfl_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+            winners_matchups = []
+            third_matchups = []
+            season_league_id = None
+            for bracket_file in season_dir.glob("*_playoffBracket*.json"):
+                if bracket_file.name.endswith("_playoffBrackets.json"):
+                    continue
+                league_id = bracket_file.name.split("_playoffBracket")[0]
+                if season_league_id is None:
+                    season_league_id = league_id
+                bracket_id = None
+                bracket_label = None
+                if "_playoffBracket_" in bracket_file.name:
+                    bracket_id = bracket_file.name.split("_playoffBracket_")[1].split(".json")[0]
+
+                bracket_list_file = season_dir / f"{league_id}_playoffBrackets.json"
+                if bracket_list_file.exists() and bracket_id:
+                    bracket_list = json.loads(bracket_list_file.read_text())
+                    bracket_container = bracket_list.get("playoffBrackets") or bracket_list.get("playoffbrackets")
+                    brackets = []
+                    if isinstance(bracket_container, dict):
+                        brackets = bracket_container.get("bracket") or bracket_container.get("playoffBracket")
+                        if isinstance(brackets, dict):
+                            brackets = [brackets]
+                    if isinstance(brackets, list):
+                        for bracket in brackets:
+                            if str(bracket.get("id")) == str(bracket_id):
+                                bracket_label = (
+                                    bracket.get("bracketWinnerTitle")
+                                    or bracket.get("name")
+                                    or bracket.get("bracketType")
+                                )
+                                break
+
+                data = json.loads(bracket_file.read_text())
+                matchups = _extract_mfl_matchups(data, bracket_label=bracket_label)
+                if not matchups:
+                    continue
+                label = (bracket_label or "").lower()
+                if "3rd" in label:
+                    third_matchups.extend(matchups)
+                elif "loser" in label or "consolation" in label or "toilet" in label:
+                    continue
+                else:
+                    winners_matchups.extend(matchups)
+
+            if season_league_id and winners_matchups:
+                rounds = [m.get("round") for m in winners_matchups if isinstance(m.get("round"), int)]
+                max_round = max(rounds) if rounds else None
+                final_matchups = winners_matchups
+                if max_round is not None:
+                    final_matchups = [m for m in winners_matchups if m.get("round") == max_round]
+                final = final_matchups[-1]
+                team_a = final["team_a"]
+                team_b = final["team_b"]
+                champ_team_id = _winner_from_scores(
+                    team_a["score"],
+                    team_b["score"],
+                    team_a["id"],
+                    team_b["id"]
+                )
+                runner_up_id = team_b["id"] if champ_team_id == team_a["id"] else team_a["id"]
+                for team_id in (champ_team_id, runner_up_id):
+                    meta = _lookup_team_meta(team_meta, "mfl", season, season_league_id, team_id)
+                    if meta:
+                        winners_top3_by_owner.setdefault(meta["owner_id"], set()).add(season)
+
+            if season_league_id and third_matchups:
+                rounds = [m.get("round") for m in third_matchups if isinstance(m.get("round"), int)]
+                max_round = max(rounds) if rounds else None
+                final_matchups = third_matchups
+                if max_round is not None:
+                    final_matchups = [m for m in third_matchups if m.get("round") == max_round]
+                final = final_matchups[-1]
+                team_a = final["team_a"]
+                team_b = final["team_b"]
+                third_team_id = _winner_from_scores(
+                    team_a["score"],
+                    team_b["score"],
+                    team_a["id"],
+                    team_b["id"]
+                )
+                meta = _lookup_team_meta(team_meta, "mfl", season, season_league_id, third_team_id)
+                if meta:
+                    winners_top3_by_owner.setdefault(meta["owner_id"], set()).add(season)
+
+    fleaflicker_raw_dir = Path("data/raw/fleaflicker")
+    if fleaflicker_raw_dir.exists():
+        for season_dir in fleaflicker_raw_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+            try:
+                season = int(season_dir.name)
+            except ValueError:
+                continue
+            scoreboard_files = list(season_dir.glob("*_scoreboard_week*.json"))
+            championship_game = None
+            third_game = None
+            league_id = None
+            latest_week = -1
+
+            for scoreboard_file in scoreboard_files:
+                name = scoreboard_file.name
+                if "_scoreboard_week" not in name:
+                    continue
+                try:
+                    week = int(name.split("_scoreboard_week")[1].split(".json")[0])
+                except ValueError:
+                    continue
+                data = json.loads(scoreboard_file.read_text())
+                week_games = data.get("games", []) or []
+                if not week_games:
+                    continue
+                champ = next((game for game in week_games if game.get("isChampionshipGame")), None)
+                third = next((game for game in week_games if game.get("isThirdPlaceGame")), None)
+                if champ and week >= latest_week:
+                    championship_game = champ
+                    third_game = third
+                    latest_week = week
+                    league_id = name.split("_scoreboard_week")[0]
+
+            if not championship_game or not league_id:
+                continue
+
+            champ_home = championship_game.get("home", {})
+            champ_away = championship_game.get("away", {})
+            champ_home_score = _fleaflicker_score_value(championship_game.get("homeScore", 0))
+            champ_away_score = _fleaflicker_score_value(championship_game.get("awayScore", 0))
+            champ_winner_id = _winner_from_scores(
+                champ_home_score,
+                champ_away_score,
+                str(champ_home.get("id")),
+                str(champ_away.get("id"))
+            )
+            runner_up_id = None
+            if champ_winner_id:
+                runner_up_id = str(champ_away.get("id")) if champ_winner_id == str(champ_home.get("id")) else str(champ_home.get("id"))
+
+            for team_id in (champ_winner_id, runner_up_id):
+                meta = _lookup_team_meta(team_meta, "fleaflicker", season, league_id, team_id)
+                if meta:
+                    winners_top3_by_owner.setdefault(meta["owner_id"], set()).add(season)
+
+            if third_game:
+                third_home = third_game.get("home", {})
+                third_away = third_game.get("away", {})
+                third_home_score = _fleaflicker_score_value(third_game.get("homeScore", 0))
+                third_away_score = _fleaflicker_score_value(third_game.get("awayScore", 0))
+                third_winner_id = _winner_from_scores(
+                    third_home_score,
+                    third_away_score,
+                    str(third_home.get("id")),
+                    str(third_away.get("id"))
+                )
+                meta = _lookup_team_meta(team_meta, "fleaflicker", season, league_id, third_winner_id)
+                if meta:
+                    winners_top3_by_owner.setdefault(meta["owner_id"], set()).add(season)
 
     for season in sorted(mart_matchups["season"].unique()):
         season_playoffs = playoff_stats[playoff_stats["season"] == season]
@@ -922,13 +1356,19 @@ def build_mart_owner_achievements(mart_matchups: pd.DataFrame) -> pd.DataFrame:
     for owner_id in all_owners:
         playoff_seasons = sorted(playoff_top3_by_owner.get(owner_id, []))
         pf_seasons = sorted(pf_top3_by_owner.get(owner_id, []))
+        winners_seasons = sorted(winners_top3_by_owner.get(owner_id, set()))
+        top2_seasons = sorted(top2_seeds_by_owner.get(owner_id, set()))
 
         achievement_rows.append({
             "owner_id": owner_id,
             "top3_playoff_finishes": len(playoff_seasons),
             "top3_playoff_seasons": ",".join(str(season) for season in playoff_seasons),
             "top3_pf_seasons": len(pf_seasons),
-            "top3_pf_seasons_list": ",".join(str(season) for season in pf_seasons)
+            "top3_pf_seasons_list": ",".join(str(season) for season in pf_seasons),
+            "top3_winners_finishes": len(winners_seasons),
+            "top3_winners_seasons": ",".join(str(season) for season in winners_seasons),
+            "top2_seeds": len(top2_seasons),
+            "top2_seeds_seasons": ",".join(str(season) for season in top2_seasons)
         })
 
     return pd.DataFrame(achievement_rows)
@@ -1004,6 +1444,7 @@ def build_all_marts() -> None:
     mart_owner_all_time = build_mart_owner_all_time(mart_owner_season)
     mart_h2h = build_mart_h2h(mart_matchups)
     mart_titles = build_mart_titles(mart_matchups)
+    mart_playoff_seeds = build_mart_playoff_seeds()
     mart_owner_achievements = build_mart_owner_achievements(mart_matchups)
 
     # Validate
@@ -1019,6 +1460,7 @@ def build_all_marts() -> None:
     mart_h2h.to_csv(mart_dir / "mart_h2h.csv", index=False)
     mart_owner_achievements.to_csv(mart_dir / "mart_owner_achievements.csv", index=False)
     mart_titles.to_csv(mart_dir / "mart_titles.csv", index=False)
+    mart_playoff_seeds.to_csv(mart_dir / "mart_playoff_seeds.csv", index=False)
 
     print(f"✓ Built {len(mart_matchups)} matchups")
     print(f"✓ Built {len(mart_owner_season)} owner-season records")
@@ -1026,3 +1468,4 @@ def build_all_marts() -> None:
     print(f"✓ Built {len(mart_h2h)} head-to-head records")
     print(f"✓ Built {len(mart_owner_achievements)} owner achievement records")
     print(f"✓ Built {len(mart_titles)} title records")
+    print(f"✓ Built {len(mart_playoff_seeds)} playoff seed records")

@@ -47,6 +47,8 @@ def normalize_mfl_season(season: int, league_id: str) -> None:
     teams_df = pd.DataFrame(teams)
     teams_df.to_csv(staging_dir / "stg_teams.csv", index=False)
 
+    expected_matchups = len(teams) // 2 if teams else 0
+
     # Normalize matchups
     matchups = []
     weekly_schedule = schedule_data.get("schedule", {}).get("weeklySchedule", [])
@@ -54,6 +56,16 @@ def normalize_mfl_season(season: int, league_id: str) -> None:
     # Handle single week case
     if isinstance(weekly_schedule, dict):
         weekly_schedule = [weekly_schedule]
+
+    playoff_start_week = None
+    if expected_matchups > 0:
+        for week_idx, week_data in enumerate(weekly_schedule, start=1):
+            matchup_list = week_data.get("matchup", [])
+            if isinstance(matchup_list, dict):
+                matchup_list = [matchup_list]
+            if 0 < len(matchup_list) < expected_matchups:
+                playoff_start_week = week_idx
+                break
 
     for week_idx, week_data in enumerate(weekly_schedule, start=1):
         matchup_list = week_data.get("matchup", [])
@@ -93,7 +105,11 @@ def normalize_mfl_season(season: int, league_id: str) -> None:
                 platform_team_id_away=away["id"],
                 score_home=float(home.get("score", 0)),
                 score_away=float(away.get("score", 0)),
-                is_playoffs=None  # Will determine later based on week/config
+                is_playoffs=(
+                    week_idx >= playoff_start_week
+                    if playoff_start_week is not None
+                    else None
+                )
             )
             matchups.append(matchup_obj.model_dump())
 

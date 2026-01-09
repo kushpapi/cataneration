@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 import pandas as pd
-from src.common.schemas import StagingTeam, StagingMatchup
+from src.common.schemas import StagingTeam, StagingMatchup, StagingRosterPlayer, StagingTransaction
 
 
 def normalize_sleeper_season(season: int, league_id: str) -> None:
@@ -27,6 +27,15 @@ def normalize_sleeper_season(season: int, league_id: str) -> None:
     # Load rosters (teams)
     with open(raw_dir / f"{league_id}_rosters.json") as f:
         rosters_data = json.load(f)
+
+    # Load player map (optional)
+    players_file = raw_dir / f"{league_id}_players.json"
+    if players_file.exists():
+        with open(players_file) as f:
+            players_data = json.load(f)
+    else:
+        print("  [WARN] No Sleeper players file found; roster player names may be missing")
+        players_data = {}
 
     # Load users (owners)
     with open(raw_dir / f"{league_id}_users.json") as f:
@@ -66,6 +75,81 @@ def normalize_sleeper_season(season: int, league_id: str) -> None:
     teams_df = pd.DataFrame(teams)
     teams_df.to_csv(staging_dir / "stg_teams.csv", index=False)
 
+    # Normalize roster players
+    roster_players = []
+    for roster in rosters_data:
+        roster_id = roster["roster_id"]
+        roster_players_list = roster.get("players") or []
+        starters = set(roster.get("starters") or [])
+        taxi = set(roster.get("taxi") or [])
+        reserve = set(roster.get("reserve") or [])
+
+        for player_id in roster_players_list:
+            player_key = str(player_id)
+            player = players_data.get(player_key, {})
+            player_name = (
+                player.get("full_name")
+                or player.get("first_name")
+                or player.get("last_name")
+                or player_key
+            )
+            roster_player = StagingRosterPlayer(
+                platform="sleeper",
+                season=season,
+                platform_league_id=league_id,
+                platform_team_id=str(roster_id),
+                player_id=player_key,
+                player_name=player_name,
+                position=player.get("position"),
+                nfl_team=player.get("team"),
+                status=player.get("status"),
+                is_starter=player_id in starters,
+                is_taxi=player_id in taxi,
+                is_reserve=player_id in reserve
+            )
+            roster_players.append(roster_player.model_dump())
+
+    roster_players_df = pd.DataFrame(roster_players)
+    roster_players_df.to_csv(staging_dir / "stg_roster_players.csv", index=False)
+
+    # Normalize transactions
+    transactions = []
+    transaction_files = sorted(raw_dir.glob(f"{league_id}_transactions_week*.json"))
+    for transaction_file in transaction_files:
+        week_num = int(transaction_file.stem.split("week")[1])
+
+        with open(transaction_file) as f:
+            transaction_data = json.load(f)
+
+        if not transaction_data:
+            continue
+
+        for transaction in transaction_data:
+            roster_ids = transaction.get("roster_ids") or []
+            adds = transaction.get("adds") or {}
+            drops = transaction.get("drops") or {}
+            metadata = transaction.get("metadata") or {}
+            transaction_obj = StagingTransaction(
+                platform="sleeper",
+                season=season,
+                platform_league_id=league_id,
+                week=week_num,
+                transaction_id=str(transaction.get("transaction_id")),
+                type=str(transaction.get("type")),
+                status=str(transaction.get("status")),
+                roster_ids=json.dumps(roster_ids),
+                adds=json.dumps(adds),
+                drops=json.dumps(drops),
+                adds_count=len(adds),
+                drops_count=len(drops),
+                metadata=json.dumps(metadata),
+                created=transaction.get("created")
+            )
+            transactions.append(transaction_obj.model_dump())
+
+    transactions_df = pd.DataFrame(transactions)
+    transactions_df.to_csv(staging_dir / "stg_transactions.csv", index=False)
+
     # Normalize matchups - collect from all matchup files
     matchups = []
 
@@ -104,14 +188,17 @@ def normalize_sleeper_season(season: int, league_id: str) -> None:
             })
 
         # Convert matchup groups to staging matchups
-        for matchup_id, teams in matchup_groups.items():
+        for matchup_id, matchup_teams in matchup_groups.items():
             # Each matchup should have exactly 2 teams
-            if len(teams) != 2:
-                print(f"  [WARN] Week {week_num} matchup {matchup_id} has {len(teams)} teams (expected 2)")
+            if len(matchup_teams) != 2:
+                print(
+                    f"  [WARN] Week {week_num} matchup {matchup_id} has "
+                    f"{len(matchup_teams)} teams (expected 2)"
+                )
                 continue
 
             # Determine home/away (Sleeper doesn't distinguish, so we'll use roster_id order)
-            teams_sorted = sorted(teams, key=lambda x: x["roster_id"])
+            teams_sorted = sorted(matchup_teams, key=lambda x: x["roster_id"])
             team_away = teams_sorted[0]
             team_home = teams_sorted[1]
 
@@ -136,7 +223,11 @@ def normalize_sleeper_season(season: int, league_id: str) -> None:
     matchups_df = pd.DataFrame(matchups)
     matchups_df.to_csv(staging_dir / "stg_matchups.csv", index=False)
 
-    print(f"✓ Normalized Sleeper {season}: {len(teams)} teams, {len(matchups)} matchups")
+    print(
+        f"✓ Normalized Sleeper {season}: "
+        f"{len(teams_df)} teams, {len(matchups)} matchups, "
+        f"{len(roster_players)} rostered players, {len(transactions)} transactions"
+    )
 
 
 if __name__ == "__main__":

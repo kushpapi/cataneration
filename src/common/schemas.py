@@ -28,6 +28,40 @@ class StagingMatchup(BaseModel):
     is_playoffs: Optional[bool] = None
 
 
+class StagingRosterPlayer(BaseModel):
+    """Schema for staging roster players table."""
+    platform: str
+    season: int
+    platform_league_id: str
+    platform_team_id: str
+    player_id: str
+    player_name: str
+    position: Optional[str] = None
+    nfl_team: Optional[str] = None
+    status: Optional[str] = None
+    is_starter: bool = False
+    is_taxi: bool = False
+    is_reserve: bool = False
+
+
+class StagingTransaction(BaseModel):
+    """Schema for staging transactions table."""
+    platform: str
+    season: int
+    platform_league_id: str
+    week: int
+    transaction_id: str
+    type: str
+    status: str
+    roster_ids: str
+    adds: str
+    drops: str
+    adds_count: int
+    drops_count: int
+    metadata: str
+    created: Optional[int] = None
+
+
 # Mart schemas
 class MartMatchup(BaseModel):
     """Schema for mart matchups table."""

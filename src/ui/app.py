@@ -394,7 +394,11 @@ def load_owner_achievements() -> pd.DataFrame:
             "top3_playoff_finishes",
             "top3_playoff_seasons",
             "top3_pf_seasons",
-            "top3_pf_seasons_list"
+            "top3_pf_seasons_list",
+            "top3_winners_finishes",
+            "top3_winners_seasons",
+            "top2_seeds",
+            "top2_seeds_seasons"
         ])
 
 @st.cache_data
@@ -411,6 +415,26 @@ def load_titles() -> pd.DataFrame:
             "champion_team_name",
             "losers_champ_owner_id",
             "losers_champ_team_name"
+        ])
+
+@st.cache_data
+def load_playoff_seeds() -> pd.DataFrame:
+    """Load playoff bracket seed slots."""
+    try:
+        return pd.read_csv("data/mart/mart_playoff_seeds.csv")
+    except FileNotFoundError:
+        return pd.DataFrame(columns=[
+            "season",
+            "platform",
+            "platform_league_id",
+            "bracket_type",
+            "round",
+            "matchup_id",
+            "slot",
+            "platform_team_id",
+            "owner_id",
+            "team_name",
+            "seed"
         ])
 
 @st.cache_data
@@ -895,6 +919,7 @@ if page == "Trophy Room":
     st.caption("Champions, #1 Losers, and season-by-season hardware")
 
     titles_df = load_titles()
+    seeds_df = load_playoff_seeds()
 
     if titles_df.empty or titles_df["champion_owner_id"].isna().all():
         st.info("Titles not available yet. Ingest playoff brackets and rebuild marts.")
@@ -1041,6 +1066,40 @@ if page == "Trophy Room":
             use_container_width=True,
             height=min(600, len(display_titles) * 40 + 100)
         )
+
+        st.subheader("Playoff Seeding by Season")
+        if seeds_df.empty:
+            st.info("Playoff seeding not available yet. Rebuild marts to generate it.")
+        else:
+            # Filter to winners bracket only and playoff teams (seeds 1-6)
+            winners_seeds = seeds_df[seeds_df["bracket_type"] == "winners"].copy()
+            if winners_seeds.empty:
+                st.info("No playoff seeding data available.")
+            else:
+                # Get unique owner/seed per season, only playoff seeds (1-6)
+                winners_seeds = winners_seeds.dropna(subset=["seed"])
+                winners_seeds = winners_seeds[winners_seeds["seed"] <= 6]
+                winners_seeds = winners_seeds.drop_duplicates(subset=["season", "owner_id", "seed"])
+                winners_seeds["Owner"] = label_owner_series(winners_seeds["owner_id"])
+                winners_seeds["Team"] = winners_seeds["team_name"].fillna("")
+                winners_seeds["Seed"] = winners_seeds["seed"].astype(int)
+
+                seed_seasons = sorted(winners_seeds["season"].dropna().unique(), reverse=True)
+                seed_season = st.selectbox("Season", seed_seasons, key="seed_season")
+
+                season_seeds = winners_seeds[winners_seeds["season"] == seed_season].copy()
+                if season_seeds.empty:
+                    st.info("No seeding data for this season.")
+                else:
+                    # Sort by seed and display
+                    season_seeds = season_seeds.sort_values("Seed")
+                    display_seeds = season_seeds[["Seed", "Owner", "Team"]].reset_index(drop=True)
+                    st.dataframe(
+                        display_seeds,
+                        hide_index=True,
+                        use_container_width=True,
+                        height=min(400, len(display_seeds) * 36 + 80)
+                    )
 
     render_data_attribution(game_filter)
 
@@ -1680,14 +1739,14 @@ elif page == "Owner Profile":
                     ].iloc[0]
 
                     st.subheader("Achievements")
-                    col1, col2 = st.columns(2)
+                    col1, col2, col3 = st.columns(3)
 
                     with col1:
                         st.metric(
-                            "Top-3 Playoff Finishes",
-                            int(owner_achievements["top3_playoff_finishes"])
+                            "Top-3 Winners Bracket",
+                            int(owner_achievements.get("top3_winners_finishes", 0))
                         )
-                        seasons = str(owner_achievements["top3_playoff_seasons"]).strip()
+                        seasons = str(owner_achievements.get("top3_winners_seasons", "")).strip()
                         st.caption(f"Seasons: {seasons}" if seasons else "Seasons: None")
 
                     with col2:
@@ -1696,6 +1755,14 @@ elif page == "Owner Profile":
                             int(owner_achievements["top3_pf_seasons"])
                         )
                         seasons = str(owner_achievements["top3_pf_seasons_list"]).strip()
+                        st.caption(f"Seasons: {seasons}" if seasons else "Seasons: None")
+
+                    with col3:
+                        st.metric(
+                            "Top-2 Playoff Seeds",
+                            int(owner_achievements.get("top2_seeds", 0))
+                        )
+                        seasons = str(owner_achievements.get("top2_seeds_seasons", "")).strip()
                         st.caption(f"Seasons: {seasons}" if seasons else "Seasons: None")
 
                     st.markdown("---")

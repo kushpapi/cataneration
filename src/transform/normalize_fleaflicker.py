@@ -41,11 +41,24 @@ def normalize_fleaflicker_season(season: int, league_id: str) -> None:
     teams_df = pd.DataFrame(teams)
     teams_df.to_csv(staging_dir / "stg_teams.csv", index=False)
 
+    expected_matchups = len(teams) // 2 if teams else 0
+
     # Normalize matchups - collect from all scoreboard files
     matchups = []
 
     # Find all scoreboard files
     scoreboard_files = sorted(raw_dir.glob(f"{league_id}_scoreboard_week*.json"))
+
+    playoff_start_week = None
+    if expected_matchups > 0:
+        for scoreboard_file in scoreboard_files:
+            week_num = int(scoreboard_file.stem.split("week")[1])
+            with open(scoreboard_file) as f:
+                scoreboard_data = json.load(f)
+            games = scoreboard_data.get("games", [])
+            if 0 < len(games) < expected_matchups:
+                playoff_start_week = week_num
+                break
 
     for scoreboard_file in scoreboard_files:
         # Extract week number from filename
@@ -69,9 +82,12 @@ def normalize_fleaflicker_season(season: int, league_id: str) -> None:
             home_score = game["homeScore"].get("score", {}).get("value", 0)
 
             # Determine if playoffs based on game metadata
-            # Fleaflicker marks playoff games, but for now we'll determine based on week
-            # Typically weeks 15-16 are playoffs in this league
-            is_playoffs = week_num >= 15
+            # Determine playoffs by reduced matchup count in a week
+            is_playoffs = (
+                week_num >= playoff_start_week
+                if playoff_start_week is not None
+                else week_num >= 15
+            )
 
             matchup_obj = StagingMatchup(
                 platform="fleaflicker",

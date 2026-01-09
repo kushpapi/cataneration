@@ -46,6 +46,9 @@ def derive_champion_roster_id(winners_bracket_json: list) -> Optional[int]:
     """
     Derive the champion roster_id from the placement matchup (p == 1).
     Returns None if the championship is not decided yet.
+
+    DEPRECATED: Prefer get_champion_from_league_metadata() which reads
+    directly from league.json instead of parsing the bracket.
     """
     if not winners_bracket_json:
         return None
@@ -55,6 +58,58 @@ def derive_champion_roster_id(winners_bracket_json: list) -> Optional[int]:
             continue
         if matchup.get("p") == 1:
             return _extract_roster_id(matchup.get("w"))
+    return None
+
+
+def get_champion_from_league_metadata(league_json: dict) -> Optional[int]:
+    """
+    Get the champion roster_id directly from league.json metadata.
+
+    This is the preferred method - Sleeper stores the champion in:
+    league_json["metadata"]["latest_league_winner_roster_id"]
+
+    Returns None if the season is not complete or metadata is missing.
+    """
+    if not league_json or not isinstance(league_json, dict):
+        return None
+
+    metadata = league_json.get("metadata") or {}
+    winner_id = metadata.get("latest_league_winner_roster_id")
+
+    if winner_id is None:
+        return None
+
+    # Can be string or int
+    if isinstance(winner_id, int):
+        return winner_id
+    if isinstance(winner_id, str) and winner_id.isdigit():
+        return int(winner_id)
+
+    return None
+
+
+def get_playoff_week_start(league_json: dict) -> Optional[int]:
+    """
+    Get the playoff start week directly from league.json settings.
+
+    This is stored in league_json["settings"]["playoff_week_start"]
+
+    Returns None if settings are missing.
+    """
+    if not league_json or not isinstance(league_json, dict):
+        return None
+
+    settings = league_json.get("settings") or {}
+    playoff_week = settings.get("playoff_week_start")
+
+    if playoff_week is None:
+        return None
+
+    if isinstance(playoff_week, int):
+        return playoff_week
+    if isinstance(playoff_week, str) and playoff_week.isdigit():
+        return int(playoff_week)
+
     return None
 
 

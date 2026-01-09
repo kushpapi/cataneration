@@ -52,6 +52,11 @@ class SleeperClient:
         url = f"{BASE_URL}/league/{self.league_id}/rosters"
         return self._fetch(url, "rosters")
 
+    def fetch_players(self) -> dict:
+        """Fetch the full NFL player map."""
+        url = f"{BASE_URL}/players/nfl"
+        return self._fetch(url, "players")
+
     def fetch_matchups(self, week: int) -> list:
         """Fetch matchups for a specific week.
 
@@ -60,6 +65,11 @@ class SleeperClient:
         """
         url = f"{BASE_URL}/league/{self.league_id}/matchups/{week}"
         return self._fetch(url, f"matchups_week{week:02d}")
+
+    def fetch_transactions(self, week: int) -> list:
+        """Fetch transactions for a specific week."""
+        url = f"{BASE_URL}/league/{self.league_id}/transactions/{week}"
+        return self._fetch(url, f"transactions_week{week:02d}")
 
     def fetch_winners_bracket(self) -> list:
         """Fetch playoff winners bracket."""
@@ -153,15 +163,19 @@ def ingest_sleeper_season(season: int, league_id: str, username: str) -> bool:
         print("\n[4/7] Fetching rosters...")
         rosters_data = client.fetch_rosters()
 
+        # Fetch player map
+        print("\n[5/9] Fetching player map...")
+        client.fetch_players()
+
         # Fetch playoff brackets
-        print("\n[5/7] Fetching winners bracket...")
+        print("\n[6/9] Fetching winners bracket...")
         try:
             winners_bracket = client.fetch_winners_bracket()
         except Exception as e:
             print(f"  [WARN] Could not fetch winners bracket: {e}")
             winners_bracket = []
 
-        print("\n[6/7] Fetching losers bracket...")
+        print("\n[7/9] Fetching losers bracket...")
         try:
             losers_bracket = client.fetch_losers_bracket()
         except Exception as e:
@@ -169,7 +183,7 @@ def ingest_sleeper_season(season: int, league_id: str, username: str) -> bool:
             losers_bracket = []
 
         # Fetch matchups (weeks 1-18 or until empty)
-        print("\n[7/7] Fetching matchups...")
+        print("\n[8/9] Fetching matchups...")
 
         weeks_fetched = 0
         for week in range(1, 19):  # Try up to week 18
@@ -191,6 +205,15 @@ def ingest_sleeper_season(season: int, league_id: str, username: str) -> bool:
                     break
                 # If we haven't fetched any weeks yet, this is a real error
                 raise
+
+        # Fetch transactions (weeks 1-18)
+        print("\n[9/9] Fetching transactions...")
+        for week in range(1, 19):
+            try:
+                print(f"\n  Transactions week {week}...")
+                client.fetch_transactions(week)
+            except Exception as e:
+                print(f"  [WARN] Could not fetch transactions week {week}: {e}")
 
         print(f"\n✓ Sleeper {season} ingestion complete! ({weeks_fetched} weeks)")
         return True
