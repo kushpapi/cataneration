@@ -7,3 +7,14 @@ data/staging/
 owner_mapping_mfl-2.xlsx
 .claude/
 CLAUDE.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.python-version
+.ipynb_checkpoints/
+/*.md
+!/README.md
